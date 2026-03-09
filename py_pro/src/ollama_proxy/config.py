@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -23,6 +24,17 @@ class LiteLLMConfig:
     reasoning_effort: str | None = None
     thinking_budget: int | None = None
     additional_params: dict = field(default_factory=dict)
+
+
+@dataclass
+class CopilotConfig:
+    """Copilot SDK用設定"""
+
+    model_name: str
+    additional_params: dict[str, Any] = field(default_factory=dict)
+
+
+ProviderConfig = LiteLLMConfig | CopilotConfig
 
 
 @dataclass
@@ -69,16 +81,14 @@ class ConfigManager:
         self.config_path = config_path
         self.providers_path = self.config_dir / "providers.json"
 
-        self._providers: dict[str, LiteLLMConfig] = {}
+        self._providers: dict[str, ProviderConfig] = {}
         self._server_config: ServerConfig = ServerConfig()
         self._lock = Lock()
         self._observer: Observer | None = None
 
-        # 初期読み込み
         self._load_server_config()
         self.reload_providers()
 
-        # ファイル監視開始
         self._start_watching()
 
     def _load_server_config(self) -> None:
@@ -91,7 +101,6 @@ class ConfigManager:
             except (json.JSONDecodeError, TypeError) as e:
                 print(f"Warning: Failed to load config.json: {e}")
         else:
-            # デフォルト設定を保存
             self._save_server_config()
 
     def _save_server_config(self) -> None:
@@ -119,29 +128,41 @@ class ConfigManager:
             print(f"Warning: Failed to parse providers.json: {e}")
             return
 
-        new_providers: dict[str, LiteLLMConfig] = {}
+        new_providers: dict[str, ProviderConfig] = {}
 
         for provider_id, config in providers_data.items():
             provider_type = config.get("provider", provider_id)
-            api_key = config.get("api_key")
-            base_url = config.get("base_url")
-            additional_params = config.get("additional_params", {})
 
-            for model in config.get("models", []):
-                ollama_name = model["name"]
-                litellm_model_name = model["model_name"]
-                reasoning_effort = model.get("reasoning_effort")
-                thinking_budget = model.get("thinking_budget")
+            if provider_type == "copilot":
+                additional_params = config.get("additional_params", {})
+                for model in config.get("models", []):
+                    ollama_name = model["name"]
+                    copilot_model_name = model["model_name"]
 
-                new_providers[ollama_name] = LiteLLMConfig(
-                    provider=provider_type,
-                    model_name=litellm_model_name,
-                    api_key=api_key,
-                    base_url=base_url,
-                    reasoning_effort=reasoning_effort,
-                    thinking_budget=thinking_budget,
-                    additional_params=additional_params,
-                )
+                    new_providers[ollama_name] = CopilotConfig(
+                        model_name=copilot_model_name,
+                        additional_params=additional_params,
+                    )
+            else:
+                api_key = config.get("api_key")
+                base_url = config.get("base_url")
+                additional_params = config.get("additional_params", {})
+
+                for model in config.get("models", []):
+                    ollama_name = model["name"]
+                    litellm_model_name = model["model_name"]
+                    reasoning_effort = model.get("reasoning_effort")
+                    thinking_budget = model.get("thinking_budget")
+
+                    new_providers[ollama_name] = LiteLLMConfig(
+                        provider=provider_type,
+                        model_name=litellm_model_name,
+                        api_key=api_key,
+                        base_url=base_url,
+                        reasoning_effort=reasoning_effort,
+                        thinking_budget=thinking_budget,
+                        additional_params=additional_params,
+                    )
 
         with self._lock:
             self._providers = new_providers
@@ -173,6 +194,36 @@ class ConfigManager:
 
         Returns:
             LiteLLM設定、見つからない場合はNone
+        """
+        with self._lock:
+            config = self._providers.get(ollama_name)
+            if isinstance(config, LiteLLMConfig):
+                return config
+            return None
+
+    def get_copilot_config(self, ollama_name: str) -> CopilotConfig | None:
+        """Ollamaモデル名からCopilot設定を取得
+
+        Args:
+            ollama_name: Ollama形式のモデル名
+
+        Returns:
+            Copilot設定、見つからない場合はNone
+        """
+        with self._lock:
+            config = self._providers.get(ollama_name)
+            if isinstance(config, CopilotConfig):
+                return config
+            return None
+
+    def get_provider_config(self, ollama_name: str) -> ProviderConfig | None:
+        """Ollamaモデル名からプロバイダー設定を取得
+
+        Args:
+            ollama_name: Ollama形式のモデル名
+
+        Returns:
+            プロバイダー設定、見つからない場合はNone
         """
         with self._lock:
             return self._providers.get(ollama_name)

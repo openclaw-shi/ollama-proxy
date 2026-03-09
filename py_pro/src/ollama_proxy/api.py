@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 import ollama_proxy.converter as converter
 from ollama_proxy.config import ConfigManager
+from ollama_proxy.copilot_client import CopilotClientManager
 
 app = FastAPI(title="Ollama Proxy Server")
 
@@ -24,6 +25,7 @@ static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 config = ConfigManager()
+copilot_client = CopilotClientManager()
 
 
 def debug_log(message: str) -> None:
@@ -95,7 +97,39 @@ async def generate(request: Request):
     )
     debug_log(f"Request Body:\n{json.dumps(body, indent=2, ensure_ascii=False)}")
 
-    # Get LiteLLM config
+    copilot_config = config.get_copilot_config(model_name)
+    if copilot_config:
+        if stream:
+            return JSONResponse(
+                {"error": "streaming is not supported for Copilot provider"},
+                status_code=501,
+            )
+
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        start_time = time.time()
+        try:
+            result = await copilot_client.chat(
+                model=copilot_config.model_name,
+                messages=messages,
+            )
+            content = result.get("content", "")
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        end_time = time.time()
+        response_data = converter.to_ollama_generate_response(
+            content=content,
+            model_name=model_name,
+            duration_seconds=end_time - start_time,
+            prompt_tokens=0,
+            completion_tokens=0,
+        )
+        return JSONResponse(response_data)
+
     lite_config = config.get_litellm_config(model_name)
     if not lite_config:
         return JSONResponse(
@@ -103,23 +137,19 @@ async def generate(request: Request):
             status_code=404,
         )
 
-    # Build messages
     messages: list[dict[str, str]] = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    # Build options
     options = _build_options(body)
     if format_type == "json":
         options["response_format"] = {"type": "json_object"}
 
-    # Apply static config options (Thinking, etc.)
     _apply_config_options(options, lite_config)
 
     start_time = time.time()
 
-    # custom_openaiの場合はproviderを"openai"に変更
     litellm_provider = (
         "openai" if lite_config.provider == "custom_openai" else lite_config.provider
     )
@@ -232,7 +262,35 @@ async def chat(request: Request):
     )
     debug_log(f"Request Body:\n{json.dumps(body, indent=2, ensure_ascii=False)}")
 
-    # Get LiteLLM config
+    copilot_config = config.get_copilot_config(model_name)
+    if copilot_config:
+        if stream:
+            return JSONResponse(
+                {"error": "streaming is not supported for Copilot provider"},
+                status_code=501,
+            )
+
+        start_time = time.time()
+        try:
+            result = await copilot_client.chat(
+                model=copilot_config.model_name,
+                messages=messages,
+            )
+            content = result.get("content", "")
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+        end_time = time.time()
+        response_data = converter.to_ollama_chat_response(
+            content=content,
+            model_name=model_name,
+            duration_seconds=end_time - start_time,
+            prompt_tokens=0,
+            completion_tokens=0,
+            tool_calls=None,
+        )
+        return JSONResponse(response_data)
+
     lite_config = config.get_litellm_config(model_name)
     if not lite_config:
         return JSONResponse(
@@ -240,17 +298,14 @@ async def chat(request: Request):
             status_code=404,
         )
 
-    # Build options
     options = _build_options(body)
     if format_type == "json":
         options["response_format"] = {"type": "json_object"}
     if tools:
         options["tools"] = tools
 
-    # Apply static config options (Thinking, etc.)
     _apply_config_options(options, lite_config)
 
-    # custom_openaiの場合はproviderを"openai"に変更
     litellm_provider = (
         "openai" if lite_config.provider == "custom_openai" else lite_config.provider
     )
