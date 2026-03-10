@@ -25,7 +25,11 @@ static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 config = ConfigManager()
-copilot_client = CopilotClientManager()
+copilot_client: CopilotClientManager | None = None
+try:
+    copilot_client = CopilotClientManager()
+except Exception as e:
+    print(f"Warning: Failed to initialize Copilot client: {e}")
 
 
 def debug_log(message: str) -> None:
@@ -109,6 +113,12 @@ async def generate(request: Request):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
+
+        if copilot_client is None:
+            return JSONResponse(
+                {"error": "Copilot provider not available. Install copilot package."},
+                status_code=503,
+            )
 
         start_time = time.time()
         try:
@@ -268,6 +278,12 @@ async def chat(request: Request):
             return JSONResponse(
                 {"error": "streaming is not supported for Copilot provider"},
                 status_code=501,
+            )
+
+        if copilot_client is None:
+            return JSONResponse(
+                {"error": "Copilot provider not available. Install copilot package."},
+                status_code=503,
             )
 
         start_time = time.time()

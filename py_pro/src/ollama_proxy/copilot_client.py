@@ -6,7 +6,9 @@ Copilot SDKを使ってOllama互換APIを提供する
 import asyncio
 from typing import Any
 
-from copilot import CopilotClient, SessionEventType
+CopilotClient: Any = None
+SessionEventType: Any = None
+_copilot_client: Any = None
 
 
 class CopilotClientManager:
@@ -16,19 +18,47 @@ class CopilotClientManager:
     """
 
     def __init__(self) -> None:
-        self._client: CopilotClient | None = None
+        global CopilotClient, SessionEventType, _copilot_client
+
+        try:
+            import copilot as _copilot_module
+
+            if hasattr(_copilot_module, "CopilotClient"):
+                CopilotClient = _copilot_module.CopilotClient
+                if hasattr(_copilot_module, "SessionEventType"):
+                    SessionEventType = _copilot_module.SessionEventType
+                _copilot_client = CopilotClient()
+        except ImportError:
+            pass
+
+    def _ensure_copilot(self):
+        global _copilot_client, CopilotClient
+        if _copilot_client is not None:
+            return True
+        if CopilotClient is None:
+            return False
+
+        try:
+            _copilot_client = CopilotClient()
+            return True
+        except Exception:
+            return False
 
     async def start(self) -> None:
         """クライアントを開始"""
-        if self._client is None:
-            self._client = CopilotClient()
-            await self._client.start()
+        global _copilot_client
+        if _copilot_client is None:
+            if not self._ensure_copilot():
+                raise RuntimeError(
+                    "copilot package is not installed. Install with: pip install github-copilot-sdk"
+                )
 
     async def stop(self) -> None:
         """クライアントを停止"""
-        if self._client is not None:
-            await self._client.stop()
-            self._client = None
+        global _copilot_client
+        if _copilot_client is not None:
+            await _copilot_client.stop()
+            _copilot_client = None
 
     async def chat(
         self,
@@ -44,11 +74,25 @@ class CopilotClientManager:
         Returns:
             Ollama形式のレスポンス
         """
-        if self._client is None:
-            await self.start()
+        global _copilot_client, CopilotClient
 
-        session = await self._client.create_session(
-            {"model": model, "streaming": False}
+        if CopilotClient is None:
+            raise RuntimeError(
+                "copilot package is not installed. Install with: pip install github-copilot-sdk"
+            )
+
+        if _copilot_client is None:
+            _copilot_client = CopilotClient(
+                on_permission_request=lambda req, inv: {"kind": "approved"}
+            )
+            await _copilot_client.start()
+
+        session = await _copilot_client.create_session(
+            {
+                "model": model,
+                "streaming": False,
+                "on_permission_request": lambda req, inv: {"kind": "approved"},
+            }
         )
 
         prompt = self._messages_to_prompt(messages)
@@ -69,8 +113,10 @@ class CopilotClientManager:
 
         try:
             await session.send({"prompt": prompt})
-            await asyncio.wait_for(
-                asyncio.Event().wait(),
+            import asyncio as _asyncio
+
+            await _asyncio.wait_for(
+                _asyncio.Event().wait(),
                 timeout=120,
             )
         except TimeoutError:
